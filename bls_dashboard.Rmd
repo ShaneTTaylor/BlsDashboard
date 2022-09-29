@@ -1,0 +1,355 @@
+---
+title: "Bureau of Labor Statistics\nEmployment Dashboard"
+author: "Shane Taylor"
+date: "`r Sys.Date()`"
+output: ioslides_presentation
+---
+
+## Household Survey
+
+The following plots of data come from the Current Population Survey (CPS), which is the Bureau's monthly sample survey of about 60,000 eligible households.
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, out.width = '100%', fig.align = 'left')
+library(dplyr)
+library(ggplot2)
+library(rjson)
+library(scales)
+library(stringr)
+
+last_year <- 2022
+
+# https://www.nber.org/research/data/us-business-cycle-expansions-and-contractions
+nber_dates <- read.csv('nber_business_cycle_dates.csv')
+
+bls_reg_key <- '0d4a3cf3e2d942c0a5e6a04d958b1133'
+
+api_url <- 'https://api.bls.gov/publicAPI/v2/timeseries/data/'
+
+plot_caption <- paste0('Data retrieved from bls.gov on ', format(Sys.Date(), '%b %d %Y'))
+
+api_request_to_df <- function(payload_list) {
+    payload_list <- toJSON(payload_list)
+    
+    exp_match <- regexpr('\\"seriesid\\":\\"[a-zA-Z0-9-]*\\",', payload_list)
+    
+    initial_series_id <- regmatches(payload_list, exp_match)
+    
+    if (length(initial_series_id) > 0) {
+        bracket_series_id <- sub(':', ':[',
+                                 sub(',', '],', initial_series_id))
+        
+        payload_list <- sub(initial_series_id, bracket_series_id, payload_list)
+    }
+    
+    json_response <- httr::POST(url = api_url,
+                                body = payload_list,
+                                httr::content_type_json())
+    
+    request_content <- fromJSON(rawToChar(json_response$content))
+    
+    if(request_content$status != 'REQUEST_SUCCEEDED') {
+        stop(paste('API request failed:'),
+             paste(json$message, collapse = ';'))
+    }
+    
+    series_count <- length(request_content$Results$series)
+    
+    for (i in 1:series_count) {
+        series_data <- request_content$Results$series[[i]]$data
+        
+        series_df <- data.frame(year = character(),
+                                period = character(),
+                                period_name = character(),
+                                value = character(),
+                                stringsAsFactors = FALSE)
+        
+        j <- 0
+        
+        for (obs in series_data) {
+            j <- j + 1
+            
+            obs$footnotes <- NULL
+            
+            obs$latest <- NULL
+            
+            series_df[j, ] <- unlist(obs)
+        }
+        
+        series_df$series_id <- request_content$Results$series[[i]]$seriesID
+        
+        if (i == 1) {
+            request_df <- series_df
+        } else {
+            request_df <- rbind(request_df, series_df)
+        }
+    }
+    
+    request_df <- request_df %>%
+        mutate(date = as.Date(paste0(1, period_name, year),
+                              format = '%d%B%Y'),
+               value = as.double(value))
+    
+    return(request_df)
+}
+
+series_across_periods <- function(series_id_list, series_first_year, series_last_year) {
+    api_requests <- ceiling((series_last_year - (series_first_year - 1)) / 20)
+    
+    for (i in 1:api_requests) {
+        start_year <- series_first_year + (i - 1) * 20
+        
+        end_year <- ifelse(i < api_requests, start_year + 19, series_last_year)
+        
+        api_request <- list('seriesid' = series_id_list,
+                            'startyear' = start_year,
+                            'endyear' = end_year,
+                            'registrationKey' = bls_reg_key)
+        
+        if (i == 1) {
+            series_df <- api_request_to_df(api_request)
+        } else {
+            series_df <- rbind(series_df, api_request_to_df(api_request))
+        }
+    }
+    
+    return(series_df)
+}
+
+nber_dates <- nber_dates %>%
+    filter(peak_year >= 1948) %>%
+    mutate(peak = as.Date(paste0('1', peak_month, peak_year), format = '%d%B%Y'),
+           trough = as.Date(paste0('1', trough_month, trough_year), format = '%d%B%Y'))
+
+plot_theme <- theme(plot.title = element_text(face = 'bold'),
+                    panel.border = element_blank(),
+                    axis.ticks.x = element_blank(),
+                    axis.ticks.y = element_blank(),
+                    legend.position = 'bottom',
+                    legend.title = element_blank())
+```
+
+---
+
+```{r employ_prime}
+# LNS11300060 - (Seas) Labor Force Participation Rate - 25-54 yrs.
+# LNS12300060 - (Seas) Employment-Population Ratio - 25-54 yrs.
+bls_series <- c('LNS11300060', 'LNS12300060')
+
+employ_prime_df <- series_across_periods(bls_series, 1948, last_year)
+
+last_date <- max(employ_prime_df$date)
+
+last_values <- employ_prime_df %>%
+    filter(date == last_date) %>%
+    select(series_id, value)
+
+last_lfp_rate <- last_values[last_values$series_id == bls_series[1], 'value']
+
+last_ep_ratio <- last_values[last_values$series_id == bls_series[2], 'value']
+
+ggplot(employ_prime_df) + plot_theme +
+    
+    geom_line(aes(x = date,
+                  y = value,
+                  color = series_id),
+              size = 1) +
+    
+    geom_rect(data = nber_dates,
+              aes(xmin = peak,
+                  xmax = trough,
+                  ymin = -Inf,
+                  ymax = +Inf),
+              fill = 'steelblue',
+              alpha = 0.5) +
+    
+    labs(x = 'Year',
+         y = 'Percent',
+         title = 'Employment and labor force participation',
+         subtitle = 'Age 25 to 54 (seasonally adjusted)',
+         caption = plot_caption) +
+    
+    geom_hline(yintercept = last_lfp_rate,
+               color = 'blue3',
+               linetype = 'dashed') +
+    
+    geom_hline(yintercept = last_ep_ratio,
+               color = 'green3',
+               linetype = 'dashed') +
+    
+    scale_y_continuous(breaks = seq(60, 90, 2)) +
+    
+    scale_x_date(date_breaks = '4 years',
+                 labels = date_format('%Y')) +
+    
+    scale_color_manual(labels = c('Labor Force Participation Rate',
+                                  'Employment-Population Ratio'),
+                       values = c('blue3', 'green3'))
+```
+
+---
+
+```{r unemploy_prime}
+# LNS14000060 - (Seas) Unemployment Rate - 25-54 yrs.
+bls_series <- 'LNS14000060'
+
+unemploy_prime_df <- series_across_periods(bls_series, 1948, last_year)
+
+last_date <- max(unemploy_prime_df$date)
+
+last_unemp_rate <- unemploy_prime_df[unemploy_prime_df$date == last_date, 'value']
+
+ggplot(unemploy_prime_df) + plot_theme +
+    
+    geom_line(aes(x = date,
+                  y = value),
+              color = 'red3',
+              size = 1) +
+    
+    geom_rect(data = nber_dates,
+              aes(xmin = peak,
+                  xmax = trough,
+                  ymin = -Inf,
+                  ymax = +Inf),
+              fill = 'steelblue',
+              alpha = 0.5) +
+    
+    labs(x = 'Year',
+         y = 'Percent',
+         title = 'Unemployment',
+         subtitle = 'Age 25 to 54 (seasonally adjusted)',
+         caption = plot_caption) +
+    
+    geom_hline(yintercept = last_unemp_rate,
+               color = 'red3',
+               linetype = 'dashed') +
+    
+    scale_y_continuous(breaks = seq(0, 20, 2)) +
+    
+    scale_x_date(date_breaks = '4 years',
+                 labels = date_format('%Y'))
+```
+
+---
+
+```{r employ_all}
+# LNS11300000 - (Seas) Labor Force Participation Rate
+# LNS12300000 - (Seas) Employment-Population Ratio
+bls_series <- c('LNS11300000', 'LNS12300000')
+
+employ_all_df <- series_across_periods(bls_series, 1948, last_year)
+
+last_date <- max(employ_all_df$date)
+
+last_values <- employ_all_df %>%
+    filter(date == last_date) %>%
+    select(series_id, value)
+
+last_lfp_rate <- last_values[last_values$series_id == bls_series[1], 'value']
+
+last_ep_ratio <- last_values[last_values$series_id == bls_series[2], 'value']
+
+ggplot(employ_all_df) + plot_theme +
+    
+    geom_line(aes(x = date,
+                  y = value,
+                  color = series_id),
+              size = 1) +
+    
+    geom_rect(data = nber_dates,
+              aes(xmin = peak,
+                  xmax = trough,
+                  ymin = -Inf,
+                  ymax = +Inf),
+              fill = 'steelblue',
+              alpha = 0.5) +
+    
+    labs(x = 'Year',
+         y = 'Percent',
+         title = 'Employment and labor force participation',
+         subtitle = '16 years and over (seasonally adjusted)',
+         caption = plot_caption) +
+    
+    geom_hline(yintercept = last_lfp_rate,
+               color = 'blue3',
+               linetype = 'dashed') +
+    
+    geom_hline(yintercept = last_ep_ratio,
+               color = 'green3',
+               linetype = 'dashed') +
+    
+    scale_y_continuous(breaks = seq(50, 70, 2)) +
+    
+    scale_x_date(date_breaks = '4 years',
+                 labels = date_format('%Y')) +
+    
+    scale_color_manual(labels = c('Labor Force Participation Rate',
+                                  'Employment-Population Ratio'),
+                       values = c('blue3', 'green3'))
+```
+
+---
+
+```{r unemploy_all}
+# LNS14000000 - (Seas) Unemployment Rate
+# LNS13327709 - (Seas) Total unemployed, plus all persons marginally attached to the labor force, plus total employed part time for economic reasons, as a percent of the civilian labor force plus all persons marginally attached to the labor force (U-6)
+bls_series <- c('LNS14000000', 'LNS13327709')
+
+intermediate_df_1 <- series_across_periods(bls_series[1], 1948, last_year)
+
+intermediate_df_2 <- series_across_periods(bls_series[2], 1995, last_year)
+
+unemploy_all_df <- rbind(intermediate_df_1, intermediate_df_2)
+
+unemploy_all_df <- unemploy_all_df %>%
+    mutate(series_id = factor(series_id,
+                              levels = c(bls_series)))
+
+last_date <- max(unemploy_all_df$date)
+
+last_values <- unemploy_all_df %>%
+    filter(date == last_date) %>%
+    select(series_id, value)
+
+last_u3_rate <- last_values[last_values$series_id == bls_series[1], 'value']
+
+last_u6_rate <- last_values[last_values$series_id == bls_series[2], 'value']
+
+ggplot(unemploy_all_df) + plot_theme +
+    
+    geom_line(aes(x = date,
+                  y = value,
+                  color = series_id),
+              size = 1) +
+    
+    geom_rect(data = nber_dates,
+              aes(xmin = peak,
+                  xmax = trough,
+                  ymin = -Inf,
+                  ymax = +Inf),
+              fill = 'steelblue',
+              alpha = 0.5) +
+    
+    labs(x = 'Year',
+         y = 'Percent',
+         title = 'Unemployment',
+         subtitle = '16 years and over (seasonally adjusted)',
+         caption = plot_caption) +
+    
+    geom_hline(yintercept = last_u3_rate,
+               color = 'red3',
+               linetype = 'dashed') +
+    
+    geom_hline(yintercept = last_u6_rate,
+               color = 'orangered',
+               linetype = 'dashed') +
+    
+    scale_y_continuous(breaks = seq(0, 30, 2)) +
+    
+    scale_x_date(date_breaks = '4 years',
+                 labels = date_format('%Y')) +
+    
+    scale_color_manual(labels = c('Standard Unemployment Rate (U-3)',
+                                  'Expanded Unemployment Rate (U-6)'),
+                       values = c('red3', 'orangered'))
+```
