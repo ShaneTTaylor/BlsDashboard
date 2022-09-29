@@ -22,7 +22,7 @@ last_year <- 2022
 # https://www.nber.org/research/data/us-business-cycle-expansions-and-contractions
 nber_dates <- read.csv('nber_business_cycle_dates.csv')
 
-bls_reg_key <- '0d4a3cf3e2d942c0a5e6a04d958b1133'
+bls_reg_key <- ''
 
 api_url <- 'https://api.bls.gov/publicAPI/v2/timeseries/data/'
 
